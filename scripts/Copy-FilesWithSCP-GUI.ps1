@@ -17,7 +17,7 @@
     - OpenSSH client (scp.exe and ssh.exe) must be installed and in the system PATH.
     - Network connectivity to the remote server.
     - Appropriate permissions on the remote server.
-.EXAMPLE
+.EXAMPLE-2
     .\Copy-FilesWithSCP-GUI.ps1
     (The GUI window will appear. Fill in the fields and click "Start Copy".)
 #>
