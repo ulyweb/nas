@@ -40,9 +40,14 @@ function Add-StatusMessage {
         [bool]$IsBold = $false
     )
     
-    # Ensure updates happen on the UI thread if called from another thread (not strictly necessary here but good practice)
     if ($richTextBox.InvokeRequired) {
-        $richTextBox.Invoke([Action[System.Windows.Forms.RichTextBox, string, System.Drawing.Color, bool]]$script:Add-StatusMessage, $richTextBox, $Message, $Color, $IsBold)
+        # Correctly create a delegate for Invoke
+        $action = [Action[System.Windows.Forms.RichTextBox, string, System.Drawing.Color, bool]] {
+            param($rtbParam, $messageParam, $colorParam, $isBoldParam)
+            # Call the original function by its script scope name, ensuring it's treated as a command
+            & $script:Add-StatusMessage -richTextBox $rtbParam -Message $messageParam -Color $colorParam -IsBold $isBoldParam
+        }
+        $richTextBox.Invoke($action, $richTextBox, $Message, $Color, $IsBold)
     } else {
         $richTextBox.SelectionStart = $richTextBox.TextLength
         $richTextBox.SelectionLength = 0
@@ -164,54 +169,54 @@ $btnStartCopy.Add_Click({
     $btnStartCopy.Text = "Copying..."
     $rtbStatus.Clear()
 
-    Add-StatusMessage $rtbStatus "Operation Started." ([System.Drawing.Color]::Blue) $true
+    Add-StatusMessage -richTextBox $rtbStatus -Message "Operation Started." -Color ([System.Drawing.Color]::Blue) -IsBold $true
 
     $sourcePathPattern = $txtSourcePath.Text
     $yearInput = $txtYear.Text
 
     if ([string]::IsNullOrWhiteSpace($sourcePathPattern)) {
-        Add-StatusMessage $rtbStatus "Source path pattern cannot be empty." ([System.Drawing.Color]::Red) $true
+        Add-StatusMessage -richTextBox $rtbStatus -Message "Source path pattern cannot be empty." -Color ([System.Drawing.Color]::Red) -IsBold $true
         $btnStartCopy.Enabled = $true
         $btnStartCopy.Text = "Start Copy"
         return
     }
-    Add-StatusMessage $rtbStatus "Using source: `"$sourcePathPattern`""
+    Add-StatusMessage -richTextBox $rtbStatus -Message "Using source: `"$sourcePathPattern`""
 
     # Construct full remote path
     $fullRemotePath = $staticRemoteBaseDirectory
     if (-not [string]::IsNullOrWhiteSpace($yearInput)) {
         $yearCleaned = $yearInput.Trim('/')
         $fullRemotePath = "$($staticRemoteBaseDirectory.TrimEnd('/'))/$yearCleaned/"
-        Add-StatusMessage $rtbStatus "Year subdirectory specified: '$yearCleaned'. Full remote path: '$fullRemotePath'"
+        Add-StatusMessage -richTextBox $rtbStatus -Message "Year subdirectory specified: '$yearCleaned'. Full remote path: '$fullRemotePath'"
     } else {
-        Add-StatusMessage $rtbStatus "No year specified. Files will be copied to base: '$fullRemotePath'"
+        Add-StatusMessage -richTextBox $rtbStatus -Message "No year specified. Files will be copied to base: '$fullRemotePath'"
     }
     if (-not $fullRemotePath.EndsWith("/")) { $fullRemotePath += "/" }
 
-    Add-StatusMessage $rtbStatus "Final destination target: $($staticDestinationUserHost):$($fullRemotePath)"
+    Add-StatusMessage -richTextBox $rtbStatus -Message "Final destination target: $($staticDestinationUserHost):$($fullRemotePath)"
 
     # Force UI update before long operation
     $form.Update() 
 
     # 1. Attempt to create remote directory
-    Add-StatusMessage $rtbStatus "Attempting to create remote directory (if needed): $fullRemotePath" ([System.Drawing.Color]::DarkCyan)
+    Add-StatusMessage -richTextBox $rtbStatus -Message "Attempting to create remote directory (if needed): $fullRemotePath" -Color ([System.Drawing.Color]::DarkCyan)
     $mkdirCommand = "mkdir -p '${fullRemotePath}'" # Single quotes for remote shell
     $sshMkdirArgs = @($staticDestinationUserHost, $mkdirCommand)
     
     try {
         $mkdirOutput = ssh @sshMkdirArgs 2>&1 # Capture stdout and stderr
         if ($LASTEXITCODE -eq 0) {
-            Add-StatusMessage $rtbStatus "Remote directory task completed successfully (or directory already existed)." ([System.Drawing.Color]::Green)
-            if ($mkdirOutput) { Add-StatusMessage $rtbStatus "mkdir output: $($mkdirOutput -join "`r`n")" }
+            Add-StatusMessage -richTextBox $rtbStatus -Message "Remote directory task completed successfully (or directory already existed)." -Color ([System.Drawing.Color]::Green)
+            if ($mkdirOutput) { Add-StatusMessage -richTextBox $rtbStatus -Message "mkdir output: $($mkdirOutput -join "`r`n")" }
         } else {
-            Add-StatusMessage $rtbStatus "ERROR: Could not create/verify remote directory '$fullRemotePath'. SSH exit code: $LASTEXITCODE" ([System.Drawing.Color]::Red) $true
-            if ($mkdirOutput) { Add-StatusMessage $rtbStatus "mkdir error output: $($mkdirOutput -join "`r`n")" ([System.Drawing.Color]::Red) }
+            Add-StatusMessage -richTextBox $rtbStatus -Message "ERROR: Could not create/verify remote directory '$fullRemotePath'. SSH exit code: $LASTEXITCODE" -Color ([System.Drawing.Color]::Red) -IsBold $true
+            if ($mkdirOutput) { Add-StatusMessage -richTextBox $rtbStatus -Message "mkdir error output: $($mkdirOutput -join "`r`n")" -Color ([System.Drawing.Color]::Red) }
             $btnStartCopy.Enabled = $true
             $btnStartCopy.Text = "Start Copy"
             return
         }
     } catch {
-        Add-StatusMessage $rtbStatus "EXCEPTION during remote directory creation: $($_.Exception.Message)" ([System.Drawing.Color]::Red) $true
+        Add-StatusMessage -richTextBox $rtbStatus -Message "EXCEPTION during remote directory creation: $($_.Exception.Message)" -Color ([System.Drawing.Color]::Red) -IsBold $true
         $btnStartCopy.Enabled = $true
         $btnStartCopy.Text = "Start Copy"
         return
@@ -219,29 +224,31 @@ $btnStartCopy.Add_Click({
     $form.Update()
 
     # 2. Execute SCP command
-    Add-StatusMessage $rtbStatus "Attempting to copy files via SCP..." ([System.Drawing.Color]::DarkCyan)
-    # Ensure source path with spaces is handled. PowerShell usually handles this for external commands.
-    # If $sourcePathPattern is a wildcard, scp handles it. If it's a specific file with spaces, it should be quoted by PS or scp.
+    Add-StatusMessage -richTextBox $rtbStatus -Message "Attempting to copy files via SCP..." -Color ([System.Drawing.Color]::DarkCyan)
     $scpDestinationArgument = "$($staticDestinationUserHost):$($fullRemotePath)"
+    # For scp, if sourcePathPattern contains spaces and is a single file, it needs to be quoted.
+    # PowerShell's argument parsing for external commands usually handles this if it's a single variable.
+    # However, explicit quoting can be safer if wildcards are not intended to be expanded by the local shell first.
+    # For simplicity here, we rely on PowerShell's default behavior. If issues arise with spaces in source paths,
+    # $sourcePathPattern might need to be explicitly quoted: "`"$sourcePathPattern`""
     $scpArguments = @($sourcePathPattern, $scpDestinationArgument)
-    
+
     try {
-        Add-StatusMessage $rtbStatus "Executing: scp `"$($sourcePathPattern)`" `"$($scpDestinationArgument)`""
-        # Note: scp.exe will open its own console for password input if needed.
+        Add-StatusMessage -richTextBox $rtbStatus -Message "Executing: scp $($scpArguments -join ' ')" # Display purpose
         $scpOutput = scp @scpArguments 2>&1 
         if ($LASTEXITCODE -eq 0) {
-            Add-StatusMessage $rtbStatus "SCP command completed successfully." ([System.Drawing.Color]::Green) $true
-            if ($scpOutput) { Add-StatusMessage $rtbStatus "SCP output: $($scpOutput -join "`r`n")" }
+            Add-StatusMessage -richTextBox $rtbStatus -Message "SCP command completed successfully." -Color ([System.Drawing.Color]::Green) -IsBold $true
+            if ($scpOutput) { Add-StatusMessage -richTextBox $rtbStatus -Message "SCP output: $($scpOutput -join "`r`n")" }
         } else {
-            Add-StatusMessage $rtbStatus "ERROR: SCP command failed. Exit code: $LASTEXITCODE." ([System.Drawing.Color]::Red) $true
-            Add-StatusMessage $rtbStatus "Source: '$sourcePathPattern', Destination: '$scpDestinationArgument'" ([System.Drawing.Color]::Red)
-            if ($scpOutput) { Add-StatusMessage $rtbStatus "SCP error output: $($scpOutput -join "`r`n")" ([System.Drawing.Color]::Red) }
+            Add-StatusMessage -richTextBox $rtbStatus -Message "ERROR: SCP command failed. Exit code: $LASTEXITCODE." -Color ([System.Drawing.Color]::Red) -IsBold $true
+            Add-StatusMessage -richTextBox $rtbStatus -Message "Source: '$sourcePathPattern', Destination: '$scpDestinationArgument'" -Color ([System.Drawing.Color]::Red)
+            if ($scpOutput) { Add-StatusMessage -richTextBox $rtbStatus -Message "SCP error output: $($scpOutput -join "`r`n")" -Color ([System.Drawing.Color]::Red) }
             $btnStartCopy.Enabled = $true
             $btnStartCopy.Text = "Start Copy"
             return
         }
     } catch {
-        Add-StatusMessage $rtbStatus "EXCEPTION during SCP operation: $($_.Exception.Message)" ([System.Drawing.Color]::Red) $true
+        Add-StatusMessage -richTextBox $rtbStatus -Message "EXCEPTION during SCP operation: $($_.Exception.Message)" -Color ([System.Drawing.Color]::Red) -IsBold $true
         $btnStartCopy.Enabled = $true
         $btnStartCopy.Text = "Start Copy"
         return
@@ -249,26 +256,26 @@ $btnStartCopy.Add_Click({
     $form.Update()
 
     # 3. Verification step
-    Add-StatusMessage $rtbStatus "Attempting to verify copy by listing remote directory..." ([System.Drawing.Color]::DarkCyan)
+    Add-StatusMessage -richTextBox $rtbStatus -Message "Attempting to verify copy by listing remote directory..." -Color ([System.Drawing.Color]::DarkCyan)
     $remoteListCommand = "ls -lah '${fullRemotePath}'" # Single quotes for remote shell
     $sshListArgs = @($staticDestinationUserHost, $remoteListCommand)
 
     try {
         $listOutput = ssh @sshListArgs 2>&1
         if ($LASTEXITCODE -eq 0) {
-            Add-StatusMessage $rtbStatus "Verification: Remote directory listing successful." ([System.Drawing.Color]::Green)
-            Add-StatusMessage $rtbStatus "--- Remote Directory Contents ---" ([System.Drawing.Color]::Black) $true
-            Add-StatusMessage $rtbStatus ($listOutput -join "`r`n") ([System.Drawing.Color]::DarkSlateGray)
-            Add-StatusMessage $rtbStatus "--- End of Directory Contents ---" ([System.Drawing.Color]::Black) $true
+            Add-StatusMessage -richTextBox $rtbStatus -Message "Verification: Remote directory listing successful." -Color ([System.Drawing.Color]::Green)
+            Add-StatusMessage -richTextBox $rtbStatus -Message "--- Remote Directory Contents ---" -Color ([System.Drawing.Color]::Black) -IsBold $true
+            Add-StatusMessage -richTextBox $rtbStatus -Message ($listOutput -join "`r`n") -Color ([System.Drawing.Color]::DarkSlateGray)
+            Add-StatusMessage -richTextBox $rtbStatus -Message "--- End of Directory Contents ---" -Color ([System.Drawing.Color]::Black) -IsBold $true
         } else {
-            Add-StatusMessage $rtbStatus "WARNING: Could not list files in remote directory for verification. SSH exit code: $LASTEXITCODE." ([System.Drawing.Color]::OrangeRed)
-            if ($listOutput) { Add-StatusMessage $rtbStatus "SSH ls error output: $($listOutput -join "`r`n")" ([System.Drawing.Color]::OrangeRed) }
+            Add-StatusMessage -richTextBox $rtbStatus -Message "WARNING: Could not list files in remote directory for verification. SSH exit code: $LASTEXITCODE." -Color ([System.Drawing.Color]::OrangeRed)
+            if ($listOutput) { Add-StatusMessage -richTextBox $rtbStatus -Message "SSH ls error output: $($listOutput -join "`r`n")" -Color ([System.Drawing.Color]::OrangeRed) }
         }
     } catch {
-        Add-StatusMessage $rtbStatus "EXCEPTION during verification listing: $($_.Exception.Message)" ([System.Drawing.Color]::OrangeRed) $true
+        Add-StatusMessage -richTextBox $rtbStatus -Message "EXCEPTION during verification listing: $($_.Exception.Message)" -Color ([System.Drawing.Color]::OrangeRed) -IsBold $true
     }
 
-    Add-StatusMessage $rtbStatus "Operation Finished." ([System.Drawing.Color]::Blue) $true
+    Add-StatusMessage -richTextBox $rtbStatus -Message "Operation Finished." -Color ([System.Drawing.Color]::Blue) -IsBold $true
     $btnStartCopy.Enabled = $true
     $btnStartCopy.Text = "Start Copy"
 })
