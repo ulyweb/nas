@@ -9,6 +9,7 @@
     - Year: Prompts the user. If a year is provided, it's appended as a subdirectory.
              If no year is provided (user presses Enter), files are copied to the base destination directory.
 
+    Before copying, it attempts to create the target directory on the remote server if it doesn't exist.
     It then uses SCP to transfer the files. After the SCP command, it attempts to verify
     the copy by listing the contents of the target directory on the remote server using SSH.
 
@@ -16,9 +17,9 @@
     - OpenSSH client (scp.exe and ssh.exe) must be installed and in the system PATH.
     - Network connectivity to the remote server.
     - Appropriate permissions to write to the destination directory on the remote server.
-    - SSH access to the remote server for verification (key-based auth recommended, or password will be prompted by ssh.exe).
+    - SSH access to the remote server for verification and directory creation.
 .EXAMPLE
-    .\Copy-FilesWithSCP.ps1
+    .\Copy-FilesWithSCP-Updated.ps1
     (Follow the prompts for source path and year)
 #>
 
@@ -77,10 +78,33 @@ if (-not $fullRemotePath.EndsWith("/")) {
     $fullRemotePath += "/"
 }
 
-Show-Message "Final destination: '$($staticDestinationUserHost):'$fullRemotePath''" # Note the single quotes for scp
+Show-Message "Final destination will be: '$($staticDestinationUserHost):'$fullRemotePath''"
+
+# 3.5. Attempt to create the remote directory
+Show-Message "Attempting to create remote directory (if it doesn't exist): $fullRemotePath"
+# The command to be executed on the remote server. Enclose the remote path in single quotes.
+$mkdirCommand = "mkdir -p '${fullRemotePath}'" 
+$sshMkdirArgs = @(
+    $staticDestinationUserHost
+    $mkdirCommand
+)
+try {
+    Show-Message "Executing remote command: ssh $($sshMkdirArgs -join ' ')"
+    ssh @sshMkdirArgs
+    if ($LASTEXITCODE -ne 0) {
+        Show-Message "Warning: Could not create or verify remote directory '$fullRemotePath' (ssh mkdir -p exit code: $LASTEXITCODE). SCP might fail if the directory doesn't exist or permissions are incorrect." -Type Warning
+        # Allow script to continue; scp will provide the final error if it fails.
+    } else {
+        Show-Message "Remote directory path '$fullRemotePath' should now exist or was already present." -Type Success
+    }
+} catch {
+    Show-Message "An error occurred while trying to create the remote directory via SSH: $($_.Exception.Message). SCP might fail." -Type Warning
+}
+
+
 Show-Message "Attempting to copy files. This may take a while..."
 
-# Execute SCP command
+# 4. Execute SCP command
 # SCP requires the destination to be quoted if it contains special characters or to ensure the path is treated correctly.
 # The path on the remote server should be enclosed in single quotes to prevent shell expansion on the remote side.
 $scpArguments = @(
@@ -96,7 +120,7 @@ try {
     if ($LASTEXITCODE -eq 0) {
         Show-Message "SCP command completed successfully." -Type Success
 
-        # Verification step: Attempt to list files on the remote server
+        # 5. Verification step: Attempt to list files on the remote server
         Show-Message "Attempting to verify by listing files in the remote directory: $fullRemotePath"
         # The command to be executed on the remote server.
         # Enclose the remote path in single quotes for `ls` to handle spaces/special characters.
@@ -127,11 +151,11 @@ try {
             Show-Message "SCP command itself reported success, but the verification step encountered an exception." -Type Warning
         }
     } else {
-        Show-Message "SCP command failed with exit code: $LASTEXITCODE. Please check for errors above." -Type Error
+        Show-Message "SCP command failed with exit code: $LASTEXITCODE. Please check for errors above. Ensure the source path is correct and files exist." -Type Error
     }
 } catch {
     Show-Message "An unexpected error occurred during the SCP operation: $($_.Exception.Message)" -Type Error
-    Show-Message "Ensure 'scp.exe' is in your PATH and the remote server is accessible." -Type Information
+    Show-Message "Ensure 'scp.exe' is in your PATH, the remote server is accessible, and you have appropriate permissions." -Type Information
 }
 
 Show-Message "Script finished."
